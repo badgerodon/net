@@ -13,7 +13,7 @@ type (
 )
 
 // Listen starts a listener and wraps it in a secure connection. (See net.Listener for details on network and laddr).
-func Listen(network, laddr string, privateKey, publicKey [32]byte, allowedKeys ...[32]byte) (net.Listener, error) {
+func Listen(network, laddr string, privateKey, publicKey [32]byte, allowedKeys ...[32]byte) (*Listener, error) {
 	underlying, err := net.Listen(network, laddr)
 	if err != nil {
 		return nil, err
