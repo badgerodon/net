@@ -30,6 +30,16 @@ type (
 	}
 )
 
+// Dial connects to the address on the named network. See net.Dial for
+// more details
+func Dial(network, address string, privateKey, publicKey [32]byte, allowedKeys ...[32]byte) (*Conn, error) {
+	conn, err := net.Dial(network, address)
+	if err != nil {
+		return nil, err
+	}
+	return Handshake(conn, privateKey, publicKey, allowedKeys...)
+}
+
 // Handshake establishes a session between two parties. Keys can be generated
 // using box.GenerateKeys. allowedKeys is a list of keys which are allowed
 // for the session.

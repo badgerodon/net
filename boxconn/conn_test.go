@@ -4,18 +4,10 @@ import (
 	"code.google.com/p/go.crypto/nacl/box"
 	"crypto/rand"
 	"fmt"
-	"net"
 	"testing"
 )
 
 func TestConn(t *testing.T) {
-	server, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Errorf("failed to start server: %v", err)
-		t.FailNow()
-	}
-	defer server.Close()
-
 	skPub, skPriv, err := box.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Errorf("failed to generate server keys: %v", err)
@@ -28,20 +20,20 @@ func TestConn(t *testing.T) {
 		t.FailNow()
 	}
 
+	server, err := Listen("tcp", "127.0.0.1:0", *skPriv, *skPub, *ckPub)
+	if err != nil {
+		t.Errorf("failed to start server: %v", err)
+		t.FailNow()
+	}
+	defer server.Close()
+
 	errors := make(chan error, 2)
 
 	go func() {
-		c, err := net.Dial("tcp", server.Addr().String())
+		bc, err := Dial("tcp", server.Addr().String(), *ckPriv, *ckPub, *skPub)
 		if err != nil {
 			t.Errorf("failed to connect to server: %v", err)
 			t.FailNow()
-		}
-		defer c.Close()
-
-		bc, err := Handshake(c, *ckPriv, *ckPub, *skPub)
-		if err != nil {
-			errors <- fmt.Errorf("failed to handshake with server: %v", err)
-			return
 		}
 		defer bc.Close()
 
@@ -58,16 +50,9 @@ func TestConn(t *testing.T) {
 	}()
 
 	go func() {
-		c, err := server.Accept()
+		bc, err := server.Accept()
 		if err != nil {
 			errors <- fmt.Errorf("failed to receive connection: %v", err)
-			return
-		}
-		defer c.Close()
-
-		bc, err := Handshake(c, *skPriv, *skPub, *ckPub)
-		if err != nil {
-			errors <- fmt.Errorf("failed to handshake with client: %v", err)
 			return
 		}
 		defer bc.Close()

@@ -13,7 +13,7 @@ type (
 )
 
 // Listen starts a listener and wraps it in a secure connection. (See net.Listener for details on network and laddr).
-func Listen(network, laddr string, privateKey, publicKey [32]byte, allowedKeys [][32]byte) (net.Listener, error) {
+func Listen(network, laddr string, privateKey, publicKey [32]byte, allowedKeys ...[32]byte) (net.Listener, error) {
 	underlying, err := net.Listen(network, laddr)
 	if err != nil {
 		return nil, err
@@ -27,8 +27,8 @@ func Listen(network, laddr string, privateKey, publicKey [32]byte, allowedKeys [
 }
 
 // Accept waits for and returns the next connection to the listener.
-func (l *Listener) Accept() (c net.Conn, err error) {
-	conn, err := l.Accept()
+func (l *Listener) Accept() (net.Conn, error) {
+	conn, err := l.underlying.Accept()
 	if err != nil {
 		return nil, err
 	}
