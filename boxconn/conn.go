@@ -25,14 +25,36 @@ type (
 	// Conn is a secure connection over an underlying net.Conn
 	Conn struct {
 		underlying                                net.Conn
-		privateKey, publicKey, sharedKey, peerKey [32]byte
+		privateKey, publicKey, sharedKey, peerKey [keySize]byte
 		recvBuffer                                []byte
+		myNonce, peerNonce                        [nonceSize]byte
 	}
 )
 
+var zeroNonce [nonceSize]byte
+
+// Generate a nonce: timestamp (uuid) + random
+func generateNonce() [nonceSize]byte {
+	var nonce [nonceSize]byte
+	copy(nonce[:16], uuid.NewUUID())
+	binary.BigEndian.PutUint64(nonce[16:], uint64(rand.Int63()))
+	return nonce
+}
+
+// The next nonce (incremented big-endianly)
+func incrementNonce(nonce [nonceSize]byte) [nonceSize]byte {
+	for i := nonceSize - 1; i >= 0; i-- {
+		nonce[i]++
+		if nonce[i] != 0 {
+			break
+		}
+	}
+	return nonce
+}
+
 // Dial connects to the address on the named network. See net.Dial for
 // more details
-func Dial(network, address string, privateKey, publicKey [32]byte, allowedKeys ...[32]byte) (*Conn, error) {
+func Dial(network, address string, privateKey, publicKey [keySize]byte, allowedKeys ...[keySize]byte) (*Conn, error) {
 	conn, err := net.Dial(network, address)
 	if err != nil {
 		return nil, err
@@ -43,7 +65,7 @@ func Dial(network, address string, privateKey, publicKey [32]byte, allowedKeys .
 // Handshake establishes a session between two parties. Keys can be generated
 // using box.GenerateKeys. allowedKeys is a list of keys which are allowed
 // for the session.
-func Handshake(conn net.Conn, privateKey, publicKey [32]byte, allowedKeys ...[32]byte) (*Conn, error) {
+func Handshake(conn net.Conn, privateKey, publicKey [keySize]byte, allowedKeys ...[keySize]byte) (*Conn, error) {
 	c := &Conn{
 		underlying: conn,
 	}
@@ -77,24 +99,50 @@ func Handshake(conn net.Conn, privateKey, publicKey [32]byte, allowedKeys ...[32
 	// compute a shared key we can use for the rest of the session
 	box.Precompute(&c.sharedKey, &c.peerKey, &c.privateKey)
 
-	return c, nil
-}
+	// now to prevent replay attacks we trade session tokens
+	// incrementing nonces take over after that
+	token := []byte(uuid.NewUUID())
+	err = c.send(token)
+	if err != nil {
+		return nil, err
+	}
 
-// Create a nonce
-func (c *Conn) nonce() [nonceSize]byte {
-	var nonce [nonceSize]byte
-	copy(nonce[:16], uuid.NewUUID())
-	binary.BigEndian.PutUint64(nonce[16:], uint64(rand.Int63()))
-	return nonce
+	// read peer session token
+	peerToken, err := c.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	// send it back
+	err = c.send(peerToken)
+	if err != nil {
+		return nil, err
+	}
+
+	// read the response
+	receivedToken, err := c.ReadMessage()
+	if err != nil {
+		return nil, err
+	}
+
+	if !bytes.Equal(token, receivedToken) {
+		return nil, fmt.Errorf("invalid session token")
+	}
+	return c, nil
 }
 
 // Encrypt, frame and send a message
 func (c *Conn) send(msg []byte) error {
-	buf := make([]byte, nonceSize+lenSize, nonceSize+lenSize+len(msg)+box.Overhead)
-	nonce := c.nonce()
-	copy(buf, nonce[:])
+	if c.myNonce == zeroNonce {
+		c.myNonce = generateNonce()
+	} else {
+		c.myNonce = incrementNonce(c.myNonce)
+	}
 
-	buf = box.Seal(buf, msg, &nonce, &c.peerKey, &c.privateKey)
+	buf := make([]byte, nonceSize+lenSize, nonceSize+lenSize+len(msg)+box.Overhead)
+	copy(buf, c.myNonce[:])
+
+	buf = box.Seal(buf, msg, &c.myNonce, &c.peerKey, &c.privateKey)
 	binary.BigEndian.PutUint64(buf[nonceSize:], uint64(len(buf)-nonceSize-lenSize))
 
 	_, err := c.underlying.Write(buf)
@@ -116,6 +164,18 @@ func (c *Conn) ReadMessage() ([]byte, error) {
 
 	var nonce [nonceSize]byte
 	copy(nonce[:], header[:nonceSize])
+
+	// verify that this is an ok nonce
+	if c.peerNonce == zeroNonce {
+		c.peerNonce = nonce
+	} else {
+		c.peerNonce = incrementNonce(c.peerNonce)
+	}
+
+	if !bytes.Equal(nonce[:], c.peerNonce[:]) {
+		return nil, fmt.Errorf("invalid nonce")
+	}
+
 	length := int(binary.BigEndian.Uint64(header[nonceSize:]))
 
 	buf := make([]byte, length)
