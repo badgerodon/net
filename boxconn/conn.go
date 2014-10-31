@@ -93,7 +93,7 @@ func Handshake(conn net.Conn, privateKey, publicKey [keySize]byte, allowedKeys .
 		}
 	}
 	if !allow {
-		return nil, fmt.Errorf("key not allowed")
+		return nil, fmt.Errorf("key not allowed: %x", c.peerKey[:])
 	}
 
 	// compute a shared key we can use for the rest of the session

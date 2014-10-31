@@ -28,18 +28,21 @@ func Listen(network, laddr string, privateKey, publicKey [32]byte, allowedKeys .
 
 // Accept waits for and returns the next connection to the listener.
 func (l *Listener) Accept() (net.Conn, error) {
-	conn, err := l.underlying.Accept()
-	if err != nil {
-		return nil, err
-	}
+	for {
+		conn, err := l.underlying.Accept()
+		if err != nil {
+			return nil, err
+		}
 
-	boxconn, err := Handshake(conn, l.privateKey, l.publicKey, l.allowedKeys...)
-	if err != nil {
-		conn.Close()
-		return nil, err
-	}
+		boxconn, err := Handshake(conn, l.privateKey, l.publicKey, l.allowedKeys...)
+		// if the handshake fails, we skip close the connection and skip it
+		if err != nil {
+			conn.Close()
+			continue
+		}
 
-	return boxconn, nil
+		return boxconn, nil
+	}
 }
 
 // Close closes the listener.
