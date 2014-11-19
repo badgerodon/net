@@ -23,7 +23,7 @@ func TestRPC(t *testing.T) {
 		}
 		return sum
 	})
-	go server.Serve(l)
+	go server.ServeConnections(l)
 
 	client, err := Dial("tcp", l.Addr().String())
 	if err != nil {

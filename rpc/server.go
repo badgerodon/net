@@ -12,7 +12,22 @@ type (
 		mu       sync.Mutex
 	}
 	Handler func(params []json.RawMessage) interface{}
+	Reader  interface {
+		ReadRequest() (Request, error)
+	}
+	Writer interface {
+		WriteResponse(Response) error
+	}
+	ReaderFunc func() (Request, error)
+	WriterFunc func(Response) error
 )
+
+func (rf ReaderFunc) ReadRequest() (Request, error) {
+	return rf()
+}
+func (wf WriterFunc) WriteResponse(r Response) error {
+	return wf(r)
+}
 
 func NewServer() *Server {
 	return &Server{
@@ -27,18 +42,15 @@ func (s *Server) Handle(method string, handler Handler) {
 	s.handlers[method] = handler
 }
 
-func (s *Server) ServeConnection(conn net.Conn) error {
-	defer conn.Close()
-
+func (s *Server) Serve(r Reader, w Writer) error {
 	requests := make(chan Request, 1)
 	responses := make(chan Response, 1)
-
 	errors := make(chan error, 3)
+
 	go func() {
 		defer close(requests)
 		for {
-			var req Request
-			err := json.NewDecoder(conn).Decode(&req)
+			req, err := r.ReadRequest()
 			if err != nil {
 				errors <- err
 				return
@@ -88,38 +100,38 @@ func (s *Server) ServeConnection(conn net.Conn) error {
 
 	go func() {
 		for res := range responses {
-			bs, err := json.Marshal(res)
-			if err != nil {
-				errors <- err
-				return
-			}
-			_, err = conn.Write(bs)
+			err := w.WriteResponse(res)
 			if err != nil {
 				errors <- err
 				return
 			}
 		}
 	}()
+
 	return <-errors
 }
 
-func (s *Server) Serve(l net.Listener) error {
-	defer l.Close()
+func (s *Server) ServeConnection(conn net.Conn) error {
+	return s.Serve(
+		ReaderFunc(func() (Request, error) {
+			var req Request
+			return req, json.NewDecoder(conn).Decode(&req)
+		}),
+		WriterFunc(func(res Response) error {
+			return json.NewEncoder(conn).Encode(res)
+		}),
+	)
+}
+
+func (s *Server) ServeConnections(lis net.Listener) error {
 	for {
-		conn, err := l.Accept()
+		conn, err := lis.Accept()
 		if err != nil {
 			return err
 		}
-
-		go s.ServeConnection(conn)
+		go func() {
+			defer conn.Close()
+			s.ServeConnection(conn)
+		}()
 	}
-	return nil
-}
-
-func (s *Server) ListenAndServe(network, address string) error {
-	l, err := net.Listen(network, address)
-	if err != nil {
-		return err
-	}
-	return s.Serve(l)
 }
