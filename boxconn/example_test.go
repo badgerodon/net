@@ -20,8 +20,9 @@ func ExampleHandshake() {
 		defer c.Close()
 
 		bc, _ := Handshake(c, *sPriv, *sPub, *cPub)
-		msg, _ := bc.ReadMessage()
-		fmt.Println("SERVER:", string(msg))
+		msg := make([]byte, 1024)
+		n, _ := bc.Read(msg)
+		fmt.Println("SERVER:", string(msg[:n]))
 		bc.Write([]byte("pong"))
 	}()
 
@@ -31,8 +32,9 @@ func ExampleHandshake() {
 
 	bc, _ := Handshake(c, *cPriv, *cPub, *sPub)
 	bc.Write([]byte("ping"))
-	msg, _ := bc.ReadMessage()
-	fmt.Println("CLIENT:", string(msg))
+	msg := make([]byte, 1024)
+	n, _ := bc.Read(msg)
+	fmt.Println("CLIENT:", string(msg[:n]))
 	// Output:
 	// SERVER: ping
 	// CLIENT: pong

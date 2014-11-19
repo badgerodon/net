@@ -5,52 +5,20 @@ package boxconn
 
 import (
 	"bytes"
-	"code.google.com/p/go-uuid/uuid"
-	"code.google.com/p/go.crypto/nacl/box"
 	"encoding/binary"
-	"fmt"
 	"io"
-	"math/rand"
 	"net"
 	"time"
-)
-
-const (
-	lenSize   = 8
-	nonceSize = 24
-	keySize   = 32
 )
 
 type (
 	// Conn is a secure connection over an underlying net.Conn
 	Conn struct {
-		underlying                                net.Conn
-		privateKey, publicKey, sharedKey, peerKey [keySize]byte
-		recvBuffer                                []byte
-		myNonce, peerNonce                        [nonceSize]byte
+		underlying net.Conn
+		recvBuffer []byte
+		protocol   *Protocol
 	}
 )
-
-var zeroNonce [nonceSize]byte
-
-// Generate a nonce: timestamp (uuid) + random
-func generateNonce() [nonceSize]byte {
-	var nonce [nonceSize]byte
-	copy(nonce[:16], uuid.NewUUID())
-	binary.BigEndian.PutUint64(nonce[16:], uint64(rand.Int63()))
-	return nonce
-}
-
-// The next nonce (incremented big-endianly)
-func incrementNonce(nonce [nonceSize]byte) [nonceSize]byte {
-	for i := nonceSize - 1; i >= 0; i-- {
-		nonce[i]++
-		if nonce[i] != 0 {
-			break
-		}
-	}
-	return nonce
-}
 
 // Dial connects to the address on the named network. See net.Dial for
 // more details
@@ -69,126 +37,39 @@ func Handshake(conn net.Conn, privateKey, publicKey [keySize]byte, allowedKeys .
 	c := &Conn{
 		underlying: conn,
 	}
+	c.protocol = NewProtocol(c, c)
 
-	c.privateKey = privateKey
-	c.publicKey = publicKey
-
-	// send our public key
-	_, err := c.underlying.Write(c.publicKey[:])
-	if err != nil {
-		return nil, err
-	}
-
-	// read our peer's public key
-	_, err = io.ReadFull(c.underlying, c.peerKey[:])
-	if err != nil {
-		return nil, err
-	}
-
-	// verify that this is a key we allow
-	allow := false
-	for _, k := range allowedKeys {
-		if bytes.Equal(k[:], c.peerKey[:]) {
-			allow = true
-		}
-	}
-	if !allow {
-		return nil, fmt.Errorf("key not allowed: %x", c.peerKey[:])
-	}
-
-	// compute a shared key we can use for the rest of the session
-	box.Precompute(&c.sharedKey, &c.peerKey, &c.privateKey)
-
-	// now to prevent replay attacks we trade session tokens
-	// incrementing nonces take over after that
-	token := []byte(uuid.NewUUID())
-	err = c.send(token)
-	if err != nil {
-		return nil, err
-	}
-
-	// read peer session token
-	peerToken, err := c.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-
-	// send it back
-	err = c.send(peerToken)
-	if err != nil {
-		return nil, err
-	}
-
-	// read the response
-	receivedToken, err := c.ReadMessage()
-	if err != nil {
-		return nil, err
-	}
-
-	if !bytes.Equal(token, receivedToken) {
-		return nil, fmt.Errorf("invalid session token")
-	}
-	return c, nil
+	return c, c.protocol.Handshake(privateKey, publicKey, allowedKeys...)
 }
 
-// Encrypt, frame and send a message
-func (c *Conn) send(msg []byte) error {
-	if c.myNonce == zeroNonce {
-		c.myNonce = generateNonce()
-	} else {
-		c.myNonce = incrementNonce(c.myNonce)
-	}
-
-	buf := make([]byte, nonceSize+lenSize, nonceSize+lenSize+len(msg)+box.Overhead)
-	copy(buf, c.myNonce[:])
-
-	buf = box.Seal(buf, msg, &c.myNonce, &c.peerKey, &c.privateKey)
-	binary.BigEndian.PutUint64(buf[nonceSize:], uint64(len(buf)-nonceSize-lenSize))
-
-	_, err := c.underlying.Write(buf)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-// ReadMessage reads the next encrypted message from the underlying connection.
-// The secure connection is not actually a stream of bytes, each time a message
-// is written it is framed with a nonce and a length.
-func (c *Conn) ReadMessage() ([]byte, error) {
+// ReadMessage reads a message (nonce, data) from the connection
+func (c *Conn) ReadMessage() (Message, error) {
 	header := make([]byte, nonceSize+lenSize)
 	_, err := io.ReadFull(c.underlying, header)
 	if err != nil {
-		return nil, err
+		return Message{}, err
 	}
 
-	var nonce [nonceSize]byte
-	copy(nonce[:], header[:nonceSize])
-
-	// verify that this is an ok nonce
-	if c.peerNonce == zeroNonce {
-		c.peerNonce = nonce
-	} else {
-		c.peerNonce = incrementNonce(c.peerNonce)
-	}
-
-	if !bytes.Equal(nonce[:], c.peerNonce[:]) {
-		return nil, fmt.Errorf("invalid nonce")
-	}
+	var msg Message
+	copy(msg.Nonce[:], header[:nonceSize])
 
 	length := int(binary.BigEndian.Uint64(header[nonceSize:]))
 
-	buf := make([]byte, length)
-	_, err = io.ReadFull(c.underlying, buf)
+	msg.Data = make([]byte, length)
+	_, err = io.ReadFull(c.underlying, msg.Data)
 	if err != nil {
-		return nil, err
-	}
-
-	msg, ok := box.Open(nil, buf, &nonce, &c.peerKey, &c.privateKey)
-	if !ok {
-		return nil, fmt.Errorf("invalid message")
+		return Message{}, err
 	}
 	return msg, nil
+}
+
+// WriteMessage writes a message (nonce, data) to the connection
+func (c *Conn) WriteMessage(msg Message) error {
+	header := make([]byte, nonceSize+lenSize)
+	copy(header[:nonceSize], msg.Nonce[:])
+	binary.BigEndian.PutUint64(header[nonceSize:], uint64(len(msg.Data)))
+	_, err := io.Copy(c.underlying, io.MultiReader(bytes.NewReader(header), bytes.NewReader(msg.Data)))
+	return err
 }
 
 // Read reads data from the connection.
@@ -202,7 +83,7 @@ func (c *Conn) Read(b []byte) (n int, err error) {
 		return copied, nil
 	}
 
-	msg, err := c.ReadMessage()
+	msg, err := c.protocol.Read()
 	if err != nil {
 		return 0, err
 	}
@@ -218,7 +99,7 @@ func (c *Conn) Read(b []byte) (n int, err error) {
 // Write can be made to time out and return a Error with Timeout() == true
 // after a fixed time limit; see SetDeadline and SetWriteDeadline.
 func (c *Conn) Write(b []byte) (n int, err error) {
-	err = c.send(b)
+	err = c.protocol.Write(b)
 	if err != nil {
 		return 0, err
 	}

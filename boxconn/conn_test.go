@@ -92,8 +92,6 @@ func TestConn(t *testing.T) {
 				return
 			}
 
-			// test replay attack
-
 			errors <- nil
 		}()
 	}
@@ -103,6 +101,7 @@ func TestConn(t *testing.T) {
 		err := <-errors
 		if err != nil {
 			t.Errorf("%v", err)
+			t.FailNow()
 		}
 	}
 
