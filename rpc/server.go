@@ -59,13 +59,21 @@ func (s *Server) Serve(r Reader, w Writer) error {
 		}
 	}()
 	go func() {
-		defer close(responses)
+		var rw sync.RWMutex
+		defer func() {
+			rw.Lock()
+			defer rw.Unlock()
+			close(responses)
+		}()
 		for req := range requests {
 			s.mu.Lock()
 			handler, ok := s.handlers[req.Method]
 			s.mu.Unlock()
 
 			go func() {
+				rw.RLock()
+				defer rw.RUnlock()
+
 				res := Response{
 					ID: req.ID,
 				}
