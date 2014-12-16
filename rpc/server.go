@@ -11,22 +11,22 @@ type (
 		handlers map[string]Handler
 		mu       sync.Mutex
 	}
-	Handler func(params []json.RawMessage) interface{}
-	Reader  interface {
+	Handler       func(params []json.RawMessage) interface{}
+	RequestReader interface {
 		ReadRequest() (Request, error)
 	}
-	Writer interface {
+	ResponseWriter interface {
 		WriteResponse(Response) error
 	}
-	ReaderFunc func() (Request, error)
-	WriterFunc func(Response) error
+	RequestReaderFunc  func() (Request, error)
+	ResponseWriterFunc func(Response) error
 )
 
-func (rf ReaderFunc) ReadRequest() (Request, error) {
-	return rf()
+func (rrf RequestReaderFunc) ReadRequest() (Request, error) {
+	return rrf()
 }
-func (wf WriterFunc) WriteResponse(r Response) error {
-	return wf(r)
+func (rwf ResponseWriterFunc) WriteResponse(r Response) error {
+	return rwf(r)
 }
 
 func NewServer() *Server {
@@ -42,7 +42,7 @@ func (s *Server) Handle(method string, handler Handler) {
 	s.handlers[method] = handler
 }
 
-func (s *Server) Serve(r Reader, w Writer) error {
+func (s *Server) Serve(r RequestReader, w ResponseWriter) error {
 	requests := make(chan Request, 1)
 	responses := make(chan Response, 1)
 	errors := make(chan error, 3)
@@ -121,11 +121,11 @@ func (s *Server) Serve(r Reader, w Writer) error {
 
 func (s *Server) ServeConnection(conn net.Conn) error {
 	return s.Serve(
-		ReaderFunc(func() (Request, error) {
+		RequestReaderFunc(func() (Request, error) {
 			var req Request
 			return req, json.NewDecoder(conn).Decode(&req)
 		}),
-		WriterFunc(func(res Response) error {
+		ResponseWriterFunc(func(res Response) error {
 			return json.NewEncoder(conn).Encode(res)
 		}),
 	)

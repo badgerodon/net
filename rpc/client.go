@@ -10,7 +10,9 @@ import (
 
 type (
 	Client struct {
-		conn      net.Conn
+		reader    ResponseReader
+		writer    RequestWriter
+		closer    io.Closer
 		requests  chan clientRequest
 		responses chan Response
 		closed    bool
@@ -21,7 +23,24 @@ type (
 		params   []json.RawMessage
 		response chan Response
 	}
+
+	ResponseReader interface {
+		ReadResponse() (Response, error)
+	}
+	ResponseReaderFunc func() (Response, error)
+	RequestWriter      interface {
+		WriteRequest(Request) error
+	}
+	RequestWriterFunc func(Request) error
 )
+
+func (rrf ResponseReaderFunc) ReadResponse() (Response, error) {
+	return rrf()
+}
+
+func (rwf RequestWriterFunc) WriteRequest(req Request) error {
+	return rwf(req)
+}
 
 // Dial connects to an rpc server
 func Dial(network, address string) (*Client, error) {
@@ -29,21 +48,31 @@ func Dial(network, address string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	return NewClient(conn), nil
+	return NewClient(
+		ResponseReaderFunc(func() (Response, error) {
+			var res Response
+			return res, json.NewDecoder(conn).Decode(&res)
+		}),
+		RequestWriterFunc(func(req Request) error {
+			return json.NewEncoder(conn).Encode(req)
+		}),
+		conn,
+	), nil
 }
 
 // NewClient creates a new client on top of a connection
-func NewClient(conn net.Conn) *Client {
+func NewClient(reader ResponseReader, writer RequestWriter, closer io.Closer) *Client {
 	c := &Client{
-		conn:      conn,
+		reader:    reader,
+		writer:    writer,
+		closer:    closer,
 		requests:  make(chan clientRequest, 1),
 		responses: make(chan Response, 1),
 	}
 
 	go func() {
 		for {
-			var res Response
-			err := json.NewDecoder(conn).Decode(&res)
+			res, err := c.reader.ReadResponse()
 			if err != nil {
 				close(c.responses)
 				return
@@ -56,11 +85,12 @@ func NewClient(conn net.Conn) *Client {
 		nextID := 1
 		waiting := make(map[int]chan Response)
 		var err error
+	outer:
 		for {
 			select {
 			case creq, ok := <-c.requests:
 				if !ok {
-					return
+					break outer
 				}
 				// if the connection is busted fail immediately
 				if err != nil {
@@ -75,16 +105,7 @@ func NewClient(conn net.Conn) *Client {
 					Params: creq.params,
 					ID:     nextID,
 				}
-				var bs []byte
-				bs, err = json.Marshal(req)
-				if err != nil {
-					creq.response <- Response{
-						Error: &Error{Code: 0, Message: err.Error()},
-					}
-					err = nil
-					continue
-				}
-				_, err = c.conn.Write(bs)
+				err = c.writer.WriteRequest(req)
 				// if sending fails, I guess we're busted
 				if err != nil {
 					creq.response <- Response{
@@ -102,6 +123,9 @@ func NewClient(conn net.Conn) *Client {
 				}
 			}
 		}
+		if c.closer != nil {
+			c.closer.Close()
+		}
 	}()
 
 	return c
@@ -116,7 +140,7 @@ func (c *Client) Close() error {
 	}
 	c.closed = true
 	close(c.requests)
-	return c.conn.Close()
+	return nil
 }
 
 // Call calls a method on the server. It is safe to call
