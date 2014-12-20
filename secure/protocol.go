@@ -103,6 +103,9 @@ func (p *Protocol) Accept(keys map[string][]byte) error {
 	// read the first message
 	msg, err := p.reader.ReadMessage()
 	if err != nil {
+		if p.Debug {
+			log.Printf("[secure] failed to open first message: %v\n", err)
+		}
 		return err
 	}
 
@@ -136,7 +139,7 @@ func (p *Protocol) Accept(keys map[string][]byte) error {
 	p.rt, err = p.aead.Open(nil, msg.Nonce, msg.Data, msg.Tag)
 	if err != nil {
 		if p.Debug {
-			log.Printf("[secure] failed to open first message: %v\n", err)
+			log.Printf("[secure] failed to open second message: %v\n", err)
 		}
 		return err
 	}
