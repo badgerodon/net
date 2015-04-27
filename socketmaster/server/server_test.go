@@ -96,7 +96,7 @@ func Test(t *testing.T) {
 	}
 	defer li1.Close()
 
-	s := New(li1)
+	s := New(li1, DefaultConfig())
 	defer s.Close()
 	go s.Serve()
 
@@ -182,7 +182,7 @@ func TestHTTP(t *testing.T) {
 		t.Errorf("error listening: %v", err)
 		return
 	}
-	s := New(li1)
+	s := New(li1, DefaultConfig())
 	defer s.Close()
 	go s.Serve()
 
@@ -244,7 +244,7 @@ func TestTLS(t *testing.T) {
 		t.Errorf("error listening: %v", err)
 		return
 	}
-	s := New(li1)
+	s := New(li1, DefaultConfig())
 	defer s.Close()
 	go s.Serve()
 
